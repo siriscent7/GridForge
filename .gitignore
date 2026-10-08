@@ -1,0 +1,30 @@
+# Build outputs
+/build/
+/build-*/
+build/
+build-*/
+**/build/
+**/build-*/
+
+# Generated binaries and object files
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dylib.dSYM/
+*.dSYM/
+*.gcno
+*.gcda
+*.exe
+*.out
+*.tmp
+*.log
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local environment secrets
+.env
+.env.*

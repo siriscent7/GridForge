@@ -1,0 +1,18 @@
+# GridForge project instructions
+
+- Keep the public compute API ordinary, portable C++20. Do not expose Objective-C, Objective-C++, Metal framework types, or platform headers from public headers.
+- The CPU backend must remain portable and build without Apple frameworks. Metal is optional, enabled by default only on macOS; explicitly requesting it elsewhere must fail clearly during configuration.
+- Keep Apple framework access inside the private Objective-C++ bridge. Keep GPU kernels in Metal Shading Language source and do not require CUDA, `nvcc`, PTX, NVIDIA libraries, Docker, Linux-only dependencies, or downloaded build/test dependencies.
+- Preserve explicit backend selection: unavailable Metal must raise a clear error and must never silently execute on CPU.
+- Preserve RAII ownership, exact buffer-size/access validation, checked allocation arithmetic, and the 512 MiB default combined buffer allocation limit.
+- CPU async execution uses a bounded shared worker pool (default four threads), per-stream FIFO execution, no worker waits on same-pool predecessors, and acceptance order as the submission order. Keep operations ordered within each stream while allowing independent streams to progress.
+- Async operations retain buffer storage. Upload staging owns a copy before submit returns; downloads return owned bytes. Never enqueue writes into caller-borrowed output spans or pointers.
+- Reserve whole-buffer access for pending operations; allow ordered reuse within one stream and reject conflicting pending access across streams or synchronous calls. Do not hold scheduler locks during bulk copies or kernels.
+- Preserve the defaults of 1,024 outstanding operations per runtime and 64 MiB of staging/results. Count completed download results until their result handles are destroyed; reject over-limit submissions synchronously and recover all reservations/accounting on rejection, success, or failure.
+- Async execution failures fail their stream, propagate to events/results/synchronization, skip later work on that stream, and do not stop other streams. Runtime shutdown stops acceptance, drains work, closes streams, and joins workers without throwing or creating ownership cycles.
+- Async streams support CPU and Metal through the ordinary C++ API. Metal submissions encode/commit without host-worker waits; callbacks only forward terminal status to runtime retirement. Hold stream ordering and buffer reservations through retirement, and keep shared-buffer CPU/GPU accesses exclusive as required.
+- Metal completion is not event completion until retirement publishes operation effects/accounting. Do not complete stream positions at command-buffer commit/scheduled time. Keep command buffers, pipeline, buffers, upload staging, and result state alive until the associated work has retired.
+- Host worker count is not GPU thread count. Do not claim GPU parallelism, speedup, GPU-only timings, or equivalence to CPU/NVIDIA transfer measurements from the demo.
+- Cross-stream waits accept only already-recorded same-runtime events. They enqueue barriers without blocking submitters. Preserve immutable event-prefix coverage, acyclic earlier-event ordering, dependency-aware reservations, and failure propagation through retirement. Do not add future placeholders, resettable events, or cross-runtime waits.
+- Metal dependencies are host-mediated: submit dependent GPU work only after successful dependency retirement. Do not add native Metal shared-event dependencies or ahead-of-time dependent command-buffer submission in Milestone 4.
+- Do not add CUDA translation/compatibility, a CUDA backend, filtering kernels, automatic backend selection, or LogForge integration as part of Milestone 4.

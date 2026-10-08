@@ -1,0 +1,5 @@
+#pragma once
+
+namespace gridforge::detail {
+inline constexpr char vector_add_shader_source[] = R"GRIDFORGE_MSL(@GRIDFORGE_VECTOR_ADD_SHADER@)GRIDFORGE_MSL";
+} // namespace gridforge::detail
