@@ -2,9 +2,92 @@
 
 GridForge is a small C++20 compute runtime with a portable CPU backend and an optional Apple Metal backend. It provides RAII buffers, synchronous CPU/Metal vector addition, and asynchronous CPU/Metal streams and events. Backend selection remains explicit; unavailable Metal never falls back to CPU.
 
+## Architecture
+
+The public C++ API owns runtimes, buffers, streams, events, and download results. Synchronous calls dispatch directly to the selected backend. Accepted asynchronous work passes through the stream scheduler, which publishes completion after operation retirement.
+
+```mermaid
+flowchart TD
+  subgraph api_group["Runtime API"]
+    API["Public API (gridforge.hpp)"]
+    Runtime["Runtime and buffers (runtime.cpp)"]
+  end
+
+  subgraph async_group["Async execution"]
+    Scheduler["Stream scheduler (runtime.cpp)"]
+    Events["Events and results (runtime.cpp)"]
+  end
+
+  subgraph backend_group["Compute backends"]
+    CPU["CPU execution (runtime.cpp)"]
+    Bridge["Metal interface (metal_bridge.hpp)"]
+    Metal["Metal implementation (metal_bridge.mm)"]
+    Shader["Vector-add shader (vector_add.metal)"]
+  end
+
+  API -->|implemented by| Runtime
+  Runtime -->|accepts async work| Scheduler
+  Runtime -->|synchronous CPU calls| CPU
+  Scheduler -->|executes CPU work| CPU
+  Runtime -->|synchronous Metal calls| Bridge
+  Scheduler -->|submits asynchronous Metal work| Bridge
+  Bridge -->|implemented by| Metal
+  Metal -->|dispatches kernel| Shader
+  Scheduler -->|publishes completion| Events
+
+  classDef api fill:#dbeafe,stroke:#2563eb,color:#172554
+  classDef async fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef backend fill:#dcfce7,stroke:#16a34a,color:#14532d
+  class API,Runtime api
+  class Scheduler,Events async
+  class CPU,Bridge,Metal,Shader backend
+```
+
+The demos and benchmark runner use the same public API. CPU asynchronous work uses a bounded host worker pool. Metal asynchronous work submits command buffers and retires operations after completion callbacks; cross-stream dependencies are enforced by the host scheduler.
+
+## Directory structure
+
+| Path | Purpose |
+| --- | --- |
+| [README.md](README.md) | Project overview, API usage, build instructions, and validation. |
+| [CMakeLists.txt](CMakeLists.txt) | Library, demos, benchmarks, test targets, and optional Metal configuration. |
+| [LICENSE](LICENSE) | MIT license. |
+| [include/gridforge/gridforge.hpp](include/gridforge/gridforge.hpp) | Public C++20 runtime, buffer, stream, event, result, and metrics API. |
+| [src/runtime.cpp](src/runtime.cpp) | CPU backend, buffer ownership, async scheduler, dependencies, retirement, and operation metrics. |
+| [src/metal_bridge.hpp](src/metal_bridge.hpp) | Private C++ interface to Metal. |
+| [src/metal_bridge.mm](src/metal_bridge.mm) | Objective-C++ device, pipeline, command-buffer, and GPU-timing implementation. |
+| [src/metal_shader.hpp.in](src/metal_shader.hpp.in) | Template used by CMake to embed the shader source. |
+| [src/main.cpp](src/main.cpp) | Synchronous vector-add demo. |
+| [src/async_main.cpp](src/async_main.cpp) | Independent asynchronous-stream demo. |
+| [src/dependency_main.cpp](src/dependency_main.cpp) | Three-stream dependency pipeline demo. |
+| [src/bench_main.cpp](src/bench_main.cpp) | Benchmark CLI, prepared cases, balanced measurement order, verification, and exports. |
+| [src/bench_support.hpp](src/bench_support.hpp) | Statistics, partitioning, and measurement-order helpers. |
+| [src/test_hooks.hpp](src/test_hooks.hpp) | Private deterministic completion hooks for scheduler tests. |
+| [shaders/vector_add.metal](shaders/vector_add.metal) | Metal vector-add kernel with grid-tail bounds checking. |
+| [tests/test_runtime.cpp](tests/test_runtime.cpp) | Synchronous runtime and buffer tests. |
+| [tests/test_async.cpp](tests/test_async.cpp) | CPU async scheduling, ownership, limits, and failure tests. |
+| [tests/test_async_metal.cpp](tests/test_async_metal.cpp) | Hardware-backed Metal async tests. |
+| [tests/test_dependencies.cpp](tests/test_dependencies.cpp) | Dependency ordering, propagation, and retirement stress tests. |
+| [tests/test_dependencies_metal.cpp](tests/test_dependencies_metal.cpp) | Hardware-backed Metal dependency tests. |
+| [tests/test_bench.cpp](tests/test_bench.cpp) | CLI validation, statistics, sample counts, ordering, metrics, and export-failure regressions. |
+| [scripts/validate_milestone5.sh](scripts/validate_milestone5.sh) | Release tests, repeated async/dependency tests, benchmark checks, and optional CPU sanitizer builds. |
+| [scripts/check_benchmark_results.py](scripts/check_benchmark_results.py) | Independent standard-library checker for CSV, JSON, ordering, and operation records. |
+| [docs/benchmark_methodology.md](docs/benchmark_methodology.md) | Timing boundaries, work definitions, export schemas, limits, and reproducibility. |
+| [INSTALL_FIXES.md](INSTALL_FIXES.md), [ORDERING_FIX.md](ORDERING_FIX.md) | Historical installation and correction notes. |
+| `.github/copilot-instructions.md` | Repository guidance for Copilot. |
+| `.gitignore` | Exclusions for generated files and local artifacts. |
+
+Build directories such as `build/` and `build-m5-fixed/`, benchmark exports in `bench_results/`, and validation logs/results in `validation_results/` are generated locally. Keep these paths ignored by Git. Alongside the existing build exclusions, include:
+
+```gitignore
+/bench_results/
+/validation_results/
+```
+
 ## Requirements and platform settings
 
 - CMake 3.20 or newer and a C++20 compiler.
+- Python 3 for the independent benchmark checker; Bash for the validation script.
 - macOS builds enable Metal by default and compile for arm64 by default. The configured minimum deployment target is macOS 13.0; the Metal APIs used here are available at that level. Override `CMAKE_OSX_DEPLOYMENT_TARGET` or `CMAKE_OSX_ARCHITECTURES` at configure time when intentionally targeting a different Apple platform setup.
 - Metal shader source is compiled at runtime through the system Metal framework. No separate `metal` command-line tool, downloaded package, CUDA, or external test framework is required.
 - Non-macOS builds support CPU only. Setting `GRIDFORGE_ENABLE_METAL=ON` on an unsupported platform fails during CMake configuration.
@@ -17,8 +100,14 @@ From the repository root:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure --timeout 90
-./build/gridforge_dependency_demo --backend cpu
-./build/gridforge_dependency_demo --backend metal
+```
+
+To build CPU only, including on macOS:
+
+```sh
+cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DGRIDFORGE_ENABLE_METAL=OFF
+cmake --build build-cpu --parallel
+ctest --test-dir build-cpu --output-on-failure --timeout 90
 ```
 
 CTest runs synchronous CPU tests, synchronous Metal tests, CPU async scheduler/dependency tests, and separate hardware-backed async Metal and dependency tests. If Metal is not compiled in or no Metal device is available, all Metal tests report **Skipped** (not passed). Deterministic completion hooks cover pending submissions, dependency notification, retirement and failures without depending on GPU timing; the suites also cover ordering, results, ownership, limits, handoffs, access conflicts, stream isolation, and shutdown. Each test has a 90-second timeout.
@@ -26,6 +115,8 @@ CTest runs synchronous CPU tests, synchronous Metal tests, CPU async scheduler/d
 Float comparisons use absolute tolerance $1\times10^{-5}$ plus relative tolerance $1\times10^{-5}\cdot|expected|$. CPU expectations are computed independently of the backend; a small fixed-value case also uses hand-specified expected results.
 
 ## Demonstration
+
+Run CPU examples on any supported build. Metal commands require a Metal-enabled macOS build and an available device.
 
 ```sh
 ./build/gridforge_demo --backend cpu
@@ -40,7 +131,7 @@ The default demo uses 1,000,000 elements. Select another size with `--elements C
 
 The async demo defaults to CPU and accepts `--backend cpu|metal`. It uses two streams with independent buffers, reports actual backend/device and configured host worker count, and verifies both downloads. Host worker count is not GPU thread count. The demo does not claim that operations execute concurrently or run faster.
 
-The dependency demo uses three streams for `A + B`, then `C + B`, then download. It verifies against independently computed `A + 2*B`, submits dependent work without first synchronizing producer/intermediate streams on the calling thread, and makes no overlap or speedup claim.
+The dependency demo uses three streams for `A + B`, then `C + B`, then download. It verifies against two sequential reference float additions, `(A + B) + B`, submits dependent work without first synchronizing producer/intermediate streams on the calling thread, and makes no overlap or speedup claim.
 
 ## Asynchronous CPU and Metal API
 
@@ -105,7 +196,7 @@ CPU work uses the shared bounded host pool. Metal dependencies are host-mediated
 
 ## Project boundaries
 
-GridForge does not support CUDA source, CUDA binary compatibility, PTX, NVIDIA libraries, filtering kernels, a CUDA backend, native Metal shared-event dependencies, ahead-of-time dependent command submission, automatic backend selection, or LogForge integration.
+GridForge does not support CUDA source, CUDA binary compatibility, PTX, NVIDIA libraries, filtering kernels, a CUDA backend, native Metal shared-event dependencies, ahead-of-time dependent command submission, or automatic backend selection.
 
 ## Benchmarking and measurement methodology
 
@@ -119,7 +210,7 @@ cmake --build build --parallel
 ./build/gridforge_bench --backend both --workload streams --mode both --streams 1,2,4 --output-dir build/bench_both
 ```
 
-`--mode` accepts `sync`, `async`, or `both` (the default). Inputs, expected values, buffers, and streams are prepared once per case; runtime initialization and buffer allocation are reported separately. Warmups and measured iterations reuse the case resources. Measured case order rotates deterministically between rounds.
+`--mode` accepts `sync`, `async`, or `both` (the default). Inputs, expected values, buffers, and streams are prepared once per case; runtime initialization and buffer allocation are reported separately. Warmups and measured iterations reuse the case resources. Measured case order rotates deterministically between rounds. With both backends available, matching cases run next to each other and the first backend alternates for each logical case across rounds. The default 20-iteration run measures each matched case CPU first 10 times and Metal first 10 times.
 
 `results.csv` contains one row per verified measured iteration, including case/iteration/order IDs, actual stream/launch/element-addition counts, and only applicable timing values. `summary.json` contains per-case count, minimum, median, mean, sample standard deviation, maximum, and nearest-rank p95 statistics, timing boundaries, backend/device, partitions, runtime limits, seed, host/compiler/build metadata, and Git revision/dirty state when obtainable. End-to-end timing includes transfers/submissions through completed downloads; async submission timing ends when the final async API call returns; resident compute excludes input upload and output download. Verification and result-handle release occur outside measured timing, before the next iteration. Failed cases are reported in the summary and cause a nonzero exit; failed iterations are excluded from raw verified samples and statistics.
 
@@ -127,14 +218,59 @@ Instrumentation is disabled by default. `--detailed` enables bounded runtime rec
 
 The summary schema is now `gridforge.benchmark.v2`; operation records are in the referenced JSONL file instead of an embedded array. Before case allocation, the runner checks the whole retained buffer matrix against each runtime's 512 MiB budget and prepared inputs/expected answers against a combined 1 GiB host budget. See [benchmark_methodology.md](docs/benchmark_methodology.md) for schemas and bounds.
 
-After updating these files, validate with:
+Run an ordinary baseline and independently check its exports:
+
+```sh
+./build/gridforge_bench --backend both --workload all --mode both \
+  --output-dir bench_results/m5-balanced
+python3 scripts/check_benchmark_results.py bench_results/m5-balanced
+```
+
+With both backends available, default settings produce 120 cases and 2,400 verified measured samples. For operation lifecycle diagnostics, use a separate detailed run:
+
+```sh
+./build/gridforge_bench --backend both --workload all --mode both \
+  --sizes 256,257 --streams 1,2 --warmup 1 --iterations 2 \
+  --detailed --output-dir bench_results/m5-detailed
+python3 scripts/check_benchmark_results.py bench_results/m5-detailed
+```
+
+Ordinary runs write `results.csv` and `summary.json` and intentionally report zero attributed operations. Detailed runs also write `operations.jsonl`; only accepted asynchronous operations contribute records.
+
+Size and stream lists reject empty fields, malformed or overflowing integers, and zero values. For example, `--sizes '256,'` is invalid. A requested case failure causes a nonzero exit even if other cases succeed; output open/write/flush failures also cause a nonzero exit.
+
+## Validation
+
+Run the quick validation or the full validation from the repository root:
 
 ```sh
 bash scripts/validate_milestone5.sh --quick
-# Default matrix and CPU sanitizer checks:
+# Full default matrix plus separate CPU ASan/UBSan and TSan builds:
 bash scripts/validate_milestone5.sh
 ```
+
+The script writes timestamped logs and exports under `validation_results/`. On macOS it enables Metal and requests both backends; elsewhere it uses CPU. CPU sanitizer builds deliberately disable Metal, so the three Metal tests are expected to report **Skipped** in those builds.
+
+### Results
+
+Validation recorded on October 9, 2026, using an Apple M5 Pro, macOS arm64, and Clang 21:
+
+| Check | Result |
+| --- | --- |
+| Release CPU/Metal CTest suite | 7/7 passed. |
+| Async and dependency suites | Each CPU/Metal suite passed 30 consecutive repetitions. |
+| Corrected ordinary smoke matrix | 72 verified cases, 216 measured samples; export checker passed. |
+| Corrected detailed smoke matrix | 40 verified cases, 80 measured samples, 324 attributed operations, zero drops; export checker passed. |
+| CPU AddressSanitizer/UndefinedBehaviorSanitizer build | Four CPU/benchmark tests passed; three Metal tests skipped. |
+| CPU ThreadSanitizer build | Four CPU/benchmark tests passed; three Metal tests skipped. |
+| Full balanced baseline | 120 verified cases, 2,400 measured samples; export checker passed. |
+
+The export checks verify raw-sample statistics, applicable timing fields, fixed work counts, balanced backend ordering, and operation attribution/drop counts for detailed runs. Completion covers the implemented runtime and measurement infrastructure. The results above establish correctness and export consistency; they do not establish a universal CPU/Metal speedup.
 
 The benchmark does not compare CPU end-to-end times with Metal GPU-only timings as a speedup, and it never treats host worker count as GPU thread count. Raw upload/download bytes are host copies, not PCIe-transfer or GPU-memory bandwidth measurements.
 
 The default benchmark sizes are 256, 4,096, 65,536, 262,144, and 1,000,000 elements with stream counts 1, 2, and 4. Warmup iterations default to 5 and measured iterations to 20. A fixed seed is used by default and results are written to `results.csv` and `summary.json` under the chosen output directory. The runner exports no username, serial number, credentials, or device UUID.
+
+## License
+
+GridForge is licensed under the [MIT License](LICENSE).
