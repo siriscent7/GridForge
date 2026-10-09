@@ -47,35 +47,45 @@ The demos and benchmark runner use the same public API. CPU asynchronous work us
 
 ## Directory structure
 
-| Path | Purpose |
-| --- | --- |
-| [README.md](README.md) | Project overview, API usage, build instructions, and validation. |
-| [CMakeLists.txt](CMakeLists.txt) | Library, demos, benchmarks, test targets, and optional Metal configuration. |
-| [LICENSE](LICENSE) | MIT license. |
-| [include/gridforge/gridforge.hpp](include/gridforge/gridforge.hpp) | Public C++20 runtime, buffer, stream, event, result, and metrics API. |
-| [src/runtime.cpp](src/runtime.cpp) | CPU backend, buffer ownership, async scheduler, dependencies, retirement, and operation metrics. |
-| [src/metal_bridge.hpp](src/metal_bridge.hpp) | Private C++ interface to Metal. |
-| [src/metal_bridge.mm](src/metal_bridge.mm) | Objective-C++ device, pipeline, command-buffer, and GPU-timing implementation. |
-| [src/metal_shader.hpp.in](src/metal_shader.hpp.in) | Template used by CMake to embed the shader source. |
-| [src/main.cpp](src/main.cpp) | Synchronous vector-add demo. |
-| [src/async_main.cpp](src/async_main.cpp) | Independent asynchronous-stream demo. |
-| [src/dependency_main.cpp](src/dependency_main.cpp) | Three-stream dependency pipeline demo. |
-| [src/bench_main.cpp](src/bench_main.cpp) | Benchmark CLI, prepared cases, balanced measurement order, verification, and exports. |
-| [src/bench_support.hpp](src/bench_support.hpp) | Statistics, partitioning, and measurement-order helpers. |
-| [src/test_hooks.hpp](src/test_hooks.hpp) | Private deterministic completion hooks for scheduler tests. |
-| [shaders/vector_add.metal](shaders/vector_add.metal) | Metal vector-add kernel with grid-tail bounds checking. |
-| [tests/test_runtime.cpp](tests/test_runtime.cpp) | Synchronous runtime and buffer tests. |
-| [tests/test_async.cpp](tests/test_async.cpp) | CPU async scheduling, ownership, limits, and failure tests. |
-| [tests/test_async_metal.cpp](tests/test_async_metal.cpp) | Hardware-backed Metal async tests. |
-| [tests/test_dependencies.cpp](tests/test_dependencies.cpp) | Dependency ordering, propagation, and retirement stress tests. |
-| [tests/test_dependencies_metal.cpp](tests/test_dependencies_metal.cpp) | Hardware-backed Metal dependency tests. |
-| [tests/test_bench.cpp](tests/test_bench.cpp) | CLI validation, statistics, sample counts, ordering, metrics, and export-failure regressions. |
-| [scripts/validate_milestone5.sh](scripts/validate_milestone5.sh) | Release tests, repeated async/dependency tests, benchmark checks, and optional CPU sanitizer builds. |
-| [scripts/check_benchmark_results.py](scripts/check_benchmark_results.py) | Independent standard-library checker for CSV, JSON, ordering, and operation records. |
-| [docs/benchmark_methodology.md](docs/benchmark_methodology.md) | Timing boundaries, work definitions, export schemas, limits, and reproducibility. |
-| [INSTALL_FIXES.md](INSTALL_FIXES.md), [ORDERING_FIX.md](ORDERING_FIX.md) | Historical installation and correction notes. |
-| `.github/copilot-instructions.md` | Repository guidance for Copilot. |
-| `.gitignore` | Exclusions for generated files and local artifacts. |
+```text
+GridForge/
+├── README.md
+├── CMakeLists.txt
+├── LICENSE
+├── INSTALL_FIXES.md
+├── ORDERING_FIX.md
+├── .gitignore
+├── .github/
+│   └── copilot-instructions.md
+├── docs/
+│   └── benchmark_methodology.md
+├── include/
+│   └── gridforge/
+│       └── gridforge.hpp
+├── scripts/
+│   ├── check_benchmark_results.py
+│   └── validate_milestone5.sh
+├── shaders/
+│   └── vector_add.metal
+├── src/
+│   ├── runtime.cpp
+│   ├── metal_bridge.hpp
+│   ├── metal_bridge.mm
+│   ├── metal_shader.hpp.in
+│   ├── main.cpp
+│   ├── async_main.cpp
+│   ├── dependency_main.cpp
+│   ├── bench_main.cpp
+│   ├── bench_support.hpp
+│   └── test_hooks.hpp
+└── tests/
+    ├── test_runtime.cpp
+    ├── test_async.cpp
+    ├── test_async_metal.cpp
+    ├── test_dependencies.cpp
+    ├── test_dependencies_metal.cpp
+    └── test_bench.cpp
+```
 
 Build directories such as `build/` and `build-m5-fixed/`, benchmark exports in `bench_results/`, and validation logs/results in `validation_results/` are generated locally. Keep these paths ignored by Git. Alongside the existing build exclusions, include:
 
