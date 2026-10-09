@@ -106,3 +106,35 @@ CPU work uses the shared bounded host pool. Metal dependencies are host-mediated
 ## Project boundaries
 
 GridForge does not support CUDA source, CUDA binary compatibility, PTX, NVIDIA libraries, filtering kernels, a CUDA backend, native Metal shared-event dependencies, ahead-of-time dependent command submission, automatic backend selection, or LogForge integration.
+
+## Benchmarking and measurement methodology
+
+The benchmark executable is `gridforge_bench` and is intended for Release builds, not sanitizer or debugger runs. It records timing with `std::chrono::steady_clock` and writes raw CSV plus summary JSON to the output directory.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+./build/gridforge_bench --backend cpu --workload all --mode both --output-dir build/bench_cpu
+./build/gridforge_bench --backend metal --workload all --mode both --output-dir build/bench_metal
+./build/gridforge_bench --backend both --workload streams --mode both --streams 1,2,4 --output-dir build/bench_both
+```
+
+`--mode` accepts `sync`, `async`, or `both` (the default). Inputs, expected values, buffers, and streams are prepared once per case; runtime initialization and buffer allocation are reported separately. Warmups and measured iterations reuse the case resources. Measured case order rotates deterministically between rounds.
+
+`results.csv` contains one row per verified measured iteration, including case/iteration/order IDs, actual stream/launch/element-addition counts, and only applicable timing values. `summary.json` contains per-case count, minimum, median, mean, sample standard deviation, maximum, and nearest-rank p95 statistics, timing boundaries, backend/device, partitions, runtime limits, seed, host/compiler/build metadata, and Git revision/dirty state when obtainable. End-to-end timing includes transfers/submissions through completed downloads; async submission timing ends when the final async API call returns; resident compute excludes input upload and output download. Verification and result-handle release occur outside measured timing, before the next iteration. Failed cases are reported in the summary and cause a nonzero exit; failed iterations are excluded from raw verified samples and statistics.
+
+Instrumentation is disabled by default. `--detailed` enables bounded runtime records for accepted async stream operations (including event operations). Capacity defaults to 4,096; `--metric-capacity N` adjusts it. After each case preparation, warmup, and measurement, the runner drains metrics and streams them to `operations.jsonl` with case, phase, iteration, and measurement-order IDs. Synchronous calls and rejected-before-acceptance submissions emit no operation records. Missing stages are JSON `null`; Metal GPU timestamps are separate from the host clock and their differences are command-buffer durations. Per-case drops and `instrumentation.complete` make overflow explicit. Detailed runs include instrumentation overhead.
+
+The summary schema is now `gridforge.benchmark.v2`; operation records are in the referenced JSONL file instead of an embedded array. Before case allocation, the runner checks the whole retained buffer matrix against each runtime's 512 MiB budget and prepared inputs/expected answers against a combined 1 GiB host budget. See [benchmark_methodology.md](docs/benchmark_methodology.md) for schemas and bounds.
+
+After updating these files, validate with:
+
+```sh
+bash scripts/validate_milestone5.sh --quick
+# Default matrix and CPU sanitizer checks:
+bash scripts/validate_milestone5.sh
+```
+
+The benchmark does not compare CPU end-to-end times with Metal GPU-only timings as a speedup, and it never treats host worker count as GPU thread count. Raw upload/download bytes are host copies, not PCIe-transfer or GPU-memory bandwidth measurements.
+
+The default benchmark sizes are 256, 4,096, 65,536, 262,144, and 1,000,000 elements with stream counts 1, 2, and 4. Warmup iterations default to 5 and measured iterations to 20. A fixed seed is used by default and results are written to `results.csv` and `summary.json` under the chosen output directory. The runner exports no username, serial number, credentials, or device UUID.

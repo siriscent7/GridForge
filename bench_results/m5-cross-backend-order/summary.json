@@ -1,0 +1,27 @@
+{
+  "schema":"gridforge.benchmark.v1",
+  "run_utc":"2026-10-09T03:44:39Z",
+  "backend":"both",
+  "workload":"single",
+  "mode":"both",
+  "worker_count":4,
+  "warmup_count":1,
+  "measured_iterations":2,
+  "seed":1196575044,
+  "instrumented":false,
+  "host":{"os":"macOS","architecture":"arm64","os_release":"25.5.0","compiler":"Clang 21.0.0 (clang-2100.1.1.101)","build_type":"Release"},
+  "git":{"revision":"4427da3a4a53","dirty":true},
+  "runtime_limits":{"max_allocated_bytes":536870912,"max_staging_bytes":67108864,"max_outstanding_operations":1024,"operation_metrics_capacity":4096},
+  "sizes":[16],
+  "stream_counts":[1,2,4],
+  "timing":{"unit":"ms","clock":"std::chrono::steady_clock","end_to_end_boundary":"first upload/submission through all required downloads available","submission_boundary":"first asynchronous API submission through last submission return","resident_compute_boundary":"launch through final completion; input upload/output download excluded","verification_boundary":"outside execution timing"},
+  "measured_case_order":"case index rotates by round; matching backend cases alternate deterministically; each case is drained",
+  "backends":[{"backend":"cpu","device":"Host CPU (arm64)","runtime_initialization_ms":0.347958},{"backend":"metal","device":"Apple M5 Pro","runtime_initialization_ms":19.082375}],
+  "backend_omissions":[],
+  "cases":[
+    {"case_id":"case-0001","backend":"cpu","workload":"single","mode":"sync","element_count":16,"partitions":[16],"requested_stream_count":1,"actual_stream_count":0,"launch_count":1,"element_additions":16,"worker_count":4,"seed":1196575044,"warmup_count":1,"measured_iterations":2,"buffer_allocation_ms":0.000583,"stream_creation_ms":0,"status":"verified","failure_reason":"","verified_sample_count":2,"statistics":{"end_to_end_ms":{"count":2,"min":0.001208,"median":0.001458,"mean":0.001458,"sample_stddev":0.000353553390593274,"max":0.001708,"p95_nearest_rank":0.001708},"submission_ms":null,"resident_compute_ms":null}},
+    {"case_id":"case-0002","backend":"cpu","workload":"single","mode":"async","element_count":16,"partitions":[16],"requested_stream_count":1,"actual_stream_count":1,"launch_count":1,"element_additions":16,"worker_count":4,"seed":1196575044,"warmup_count":1,"measured_iterations":2,"buffer_allocation_ms":0.000208,"stream_creation_ms":0.000333,"status":"verified","failure_reason":"","verified_sample_count":2,"statistics":{"end_to_end_ms":{"count":2,"min":0.01625,"median":0.0296045,"mean":0.0296045,"sample_stddev":0.0188861150187115,"max":0.042959,"p95_nearest_rank":0.042959},"submission_ms":{"count":2,"min":0.002417,"median":0.0032085,"mean":0.0032085,"sample_stddev":0.0011193500346183,"max":0.004,"p95_nearest_rank":0.004},"resident_compute_ms":null}},
+    {"case_id":"case-0003","backend":"metal","workload":"single","mode":"sync","element_count":16,"partitions":[16],"requested_stream_count":1,"actual_stream_count":0,"launch_count":1,"element_additions":16,"worker_count":4,"seed":1196575044,"warmup_count":1,"measured_iterations":2,"buffer_allocation_ms":0.008417,"stream_creation_ms":0,"status":"verified","failure_reason":"","verified_sample_count":2,"statistics":{"end_to_end_ms":{"count":2,"min":0.501291,"median":0.569458,"mean":0.569458,"sample_stddev":0.0964026959062867,"max":0.637625,"p95_nearest_rank":0.637625},"submission_ms":null,"resident_compute_ms":null}},
+    {"case_id":"case-0004","backend":"metal","workload":"single","mode":"async","element_count":16,"partitions":[16],"requested_stream_count":1,"actual_stream_count":1,"launch_count":1,"element_additions":16,"worker_count":4,"seed":1196575044,"warmup_count":1,"measured_iterations":2,"buffer_allocation_ms":0.004333,"stream_creation_ms":0.00025,"status":"verified","failure_reason":"","verified_sample_count":2,"statistics":{"end_to_end_ms":{"count":2,"min":0.186666,"median":0.352479,"mean":0.352479,"sample_stddev":0.23449499341777,"max":0.518292,"p95_nearest_rank":0.518292},"submission_ms":{"count":2,"min":0.003792,"median":0.0058545,"mean":0.0058545,"sample_stddev":0.00291681547239451,"max":0.007917,"p95_nearest_rank":0.007917},"resident_compute_ms":null}}
+  ],
+  "instrumentation":{"enabled":false,"capacity_per_runtime":0,"dropped_records":0,"complete":true,"steady_clock_unit":"nanoseconds since steady_clock epoch","gpu_time_unit":"seconds","gpu_duration_label":"GPU command-buffer execution duration","records":[]}}

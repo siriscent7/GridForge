@@ -239,13 +239,23 @@ void test_read_read_sharing_and_failed_dependency() {
 
     auto broken_stream = runtime.create_stream();
     auto consumer = runtime.create_stream();
+    Deferred broken_gate;
+    (void)broken_gate.enqueue(broken_stream);
+    broken_gate.wait_registered();
     auto broken = gridforge::detail::TestAccess::enqueue_test_task(broken_stream, [] {
         throw std::runtime_error("injected source failure");
     });
     auto recorded_failure = broken_stream.record_event();
+    broken_gate.complete();
+    require_throws<std::runtime_error>([&] { broken.wait(); }, "injected source did not fail");
+    require_throws<std::runtime_error>([&] { recorded_failure.wait(); }, "recorded failure did not retire");
+    // Accept both consumer operations before the already-failed dependency can retire them.
+    Deferred consumer_gate;
+    (void)consumer_gate.enqueue(consumer);
+    consumer_gate.wait_registered();
     auto barrier = consumer.wait_event(recorded_failure);
     auto later = consumer.record_event();
-    require_throws<std::runtime_error>([&] { broken.wait(); }, "injected source did not fail");
+    consumer_gate.complete();
     require_throws<std::runtime_error>([&] { barrier.wait(); }, "already-failed dependency barrier did not fail");
     require_throws<std::runtime_error>([&] { later.wait(); }, "consumer work after failed barrier did not fail");
     auto healthy = runtime.create_stream().record_event();
@@ -417,6 +427,22 @@ void test_dependency_shutdown_and_event_lifetimes() {
     require(barrier.is_complete(), "barrier event should remain inspectable after runtime shutdown");
 }
 
+void test_deferred_completion_retirement_stress() {
+    gridforge::Runtime runtime({gridforge::Backend::CPU, gridforge::default_max_allocated_bytes, 4});
+    std::array<gridforge::Stream, 4> streams{
+        runtime.create_stream(), runtime.create_stream(), runtime.create_stream(), runtime.create_stream()};
+    // Repeatedly race callback publication against the retirement thread entering its wait.
+    // Do not submit unrelated work that could accidentally wake a stranded completion.
+    for (std::size_t iteration = 0; iteration < 1000; ++iteration) {
+        Deferred completion;
+        auto event = completion.enqueue(streams[iteration % streams.size()]);
+        completion.wait_registered();
+        completion.complete();
+        event.wait();
+        require(event.is_complete(), "deferred completion failed to retire");
+    }
+}
+
 void run_all() {
     test_three_stream_transitive_handoff_single_worker();
     test_completed_and_self_dependencies_and_multiple_barriers();
@@ -427,6 +453,7 @@ void run_all() {
     test_event_provenance_contract();
     test_concurrent_registration_and_completion();
     test_dependency_shutdown_and_event_lifetimes();
+    test_deferred_completion_retirement_stress();
 }
 
 } // namespace

@@ -1,9 +1,12 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
+#include <vector>
 
 namespace gridforge {
 
@@ -23,10 +26,39 @@ inline constexpr std::size_t default_max_allocated_bytes = 512ULL * 1024ULL * 10
 inline constexpr std::size_t default_worker_count = 4;
 inline constexpr std::size_t default_max_outstanding_operations = 1024;
 inline constexpr std::size_t default_max_staging_bytes = 64ULL * 1024ULL * 1024ULL;
+inline constexpr std::size_t default_operation_metrics_capacity = 4096;
 
 enum class Backend {
     CPU,
     Metal,
+};
+
+enum class OperationKind { upload, vector_add, download, event_barrier, event_record, test_task };
+enum class OperationStatus { succeeded, failed, skipped };
+
+struct OperationMetric {
+    OperationKind kind{OperationKind::test_task};
+    Backend backend{Backend::CPU};
+    OperationStatus status{OperationStatus::succeeded};
+    std::uint64_t stream_id{0};
+    std::uint64_t operation_id{0};
+    // Host timestamps are nanoseconds from steady_clock's epoch; missing stages are unavailable.
+    std::optional<std::int64_t> accepted_steady_ns;
+    std::optional<std::int64_t> execution_start_steady_ns;
+    std::optional<std::int64_t> host_completion_steady_ns;
+    std::optional<std::int64_t> metal_commit_observed_steady_ns;
+    std::optional<std::int64_t> metal_completion_observed_steady_ns;
+    std::optional<std::int64_t> retirement_publication_steady_ns;
+    // Metal command-buffer timestamps and their difference are seconds on Metal's GPU clock.
+    std::optional<double> metal_gpu_start_seconds;
+    std::optional<double> metal_gpu_end_seconds;
+    std::optional<double> metal_gpu_command_buffer_execution_seconds;
+};
+
+struct OperationMetricsSnapshot {
+    bool enabled{false};
+    std::size_t dropped_records{0};
+    std::vector<OperationMetric> records;
 };
 
 class BackendUnavailable : public std::runtime_error {
@@ -40,6 +72,10 @@ struct RuntimeOptions {
     std::size_t worker_count{default_worker_count};
     std::size_t max_outstanding_operations{default_max_outstanding_operations};
     std::size_t max_staging_bytes{default_max_staging_bytes};
+    // Disabled by default. Enabled storage is preallocated and bounded per runtime.
+    bool enable_operation_metrics{false};
+    // Must be in [1, 1048576] when metrics are enabled; excess retired records are dropped and counted.
+    std::size_t operation_metrics_capacity{default_operation_metrics_capacity};
 };
 
 class Runtime;
@@ -132,6 +168,8 @@ public:
     [[nodiscard]] const char* backend_name() const;
     [[nodiscard]] const char* device_name() const;
     [[nodiscard]] std::size_t worker_count() const;
+    // Copies then clears retained records; dropped_records is cumulative for the runtime lifetime.
+    [[nodiscard]] OperationMetricsSnapshot drain_operation_metrics();
     [[nodiscard]] Buffer create_buffer(std::size_t size_bytes);
     [[nodiscard]] Stream create_stream();
 

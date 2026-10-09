@@ -6,6 +6,7 @@
 #include "metal_shader.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -148,10 +149,10 @@ public:
     [[nodiscard]] std::shared_ptr<void> submit_vector_add(
         const MetalBuffer& a, const MetalBuffer& b, MetalBuffer& c,
         std::size_t element_count,
-        std::function<void(std::exception_ptr)> completion) override {
+        std::function<void(std::exception_ptr, std::optional<double>, std::optional<double>)> completion) override {
         @autoreleasepool {
             if (element_count == 0) {
-                completion({});
+            completion({}, std::nullopt, std::nullopt);
                 return {};
             }
             const auto& left = checked(a);
@@ -188,15 +189,22 @@ public:
                 @autoreleasepool {
                     try {
                         if (completed.status == MTLCommandBufferStatusCompleted) {
-                            completion({});
+                            const double gpu_start = completed.GPUStartTime;
+                            const double gpu_end = completed.GPUEndTime;
+                            if (std::isfinite(gpu_start) && std::isfinite(gpu_end) &&
+                                gpu_start > 0.0 && gpu_end >= gpu_start && gpu_end > 0.0) {
+                                completion({}, gpu_start, gpu_end);
+                            } else {
+                                completion({}, std::nullopt, std::nullopt);
+                            }
                         } else {
                             const auto message = "Metal asynchronous vector-add command failed: " +
                                 error_description(completed.error, "command buffer did not complete");
-                            completion(std::make_exception_ptr(std::runtime_error(message)));
+                            completion(std::make_exception_ptr(std::runtime_error(message)), std::nullopt, std::nullopt);
                         }
                     } catch (...) {
                         try {
-                            completion(std::current_exception());
+                            completion(std::current_exception(), std::nullopt, std::nullopt);
                         } catch (...) {
                             // Runtime completion forwarding is noexcept and does not allocate.
                         }

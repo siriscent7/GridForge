@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <exception>
@@ -20,6 +22,13 @@
 #endif
 
 namespace gridforge::detail {
+
+using CompletionCallback = std::function<void(std::exception_ptr, std::optional<double>, std::optional<double>)>;
+
+std::int64_t steady_now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 struct Operation;
 struct StreamState;
@@ -86,13 +95,22 @@ struct DownloadState {
 
 struct Operation {
     std::function<void()> execute;
-    std::function<std::shared_ptr<void>(std::function<void(std::exception_ptr)>)> submit_async;
+    std::function<std::shared_ptr<void>(CompletionCallback)> submit_async;
+    OperationKind kind{OperationKind::test_task};
     std::shared_ptr<EventState> event;
     std::shared_ptr<DownloadState> download;
     std::vector<std::pair<std::shared_ptr<BufferState>, AccessMode>> accesses;
     std::shared_ptr<StagingLease> staging;
     std::size_t stream_position{0};
     std::uint64_t ordering_id{0};
+    bool skipped{false};
+    std::optional<std::int64_t> accepted_ns;
+    std::optional<std::int64_t> execution_start_ns;
+    std::optional<std::int64_t> host_completion_ns;
+    std::optional<std::int64_t> metal_commit_observed_ns;
+    std::optional<std::int64_t> metal_completion_observed_ns;
+    std::optional<double> metal_gpu_start_seconds;
+    std::optional<double> metal_gpu_end_seconds;
     std::shared_ptr<EventState> dependency;
     std::unordered_map<std::uint64_t, std::size_t> coverage;
     std::unordered_map<std::uint64_t, std::size_t> dependency_coverage;
@@ -127,11 +145,19 @@ struct StreamState {
 
 struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
     RuntimeState(Backend backend, std::size_t workers, std::size_t max_operations,
-                 std::size_t max_staging, std::size_t max_allocations)
+                 std::size_t max_staging, std::size_t max_allocations,
+                 bool enable_metrics, std::size_t metrics_capacity)
         : backend(backend), worker_limit(workers), operation_limit(max_operations),
-          staging_limit(max_staging), allocation_limit(max_allocations) {
+          staging_limit(max_staging), allocation_limit(max_allocations),
+          metrics_enabled(enable_metrics), metrics_capacity(metrics_capacity) {
         if (max_operations == 0) {
             throw std::invalid_argument("Maximum outstanding operations must be greater than zero.");
+        }
+        if (enable_metrics) {
+            if (metrics_capacity == 0 || metrics_capacity > 1'048'576U) {
+                throw std::invalid_argument("Operation metrics capacity must be between 1 and 1048576 records.");
+            }
+            metrics_records.reserve(metrics_capacity);
         }
         if (workers != 0) {
             threads.reserve(workers);
@@ -211,6 +237,7 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
                 }
                 if (operation->dependency && operation->dependency->error) {
                     auto failure = operation->dependency->error;
+                    operation->skipped = true;
                     stream->running = true;
                     stream->queue.pop_front();
                     lock.unlock();
@@ -225,6 +252,7 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
             if (operation->submit_async) {
                 bool inserted = false;
                 try {
+                    if (metrics_enabled) operation->execution_start_ns = steady_now_ns();
                     {
                         std::lock_guard lock(mutex);
                         in_flight.push_back({stream, operation});
@@ -232,7 +260,8 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
                     }
                     std::weak_ptr<RuntimeState> weak_runtime = weak_from_this();
                     std::weak_ptr<Operation> weak_operation = operation;
-                    auto backend_submission = operation->submit_async([weak_runtime, weak_operation](std::exception_ptr error) noexcept {
+                    auto backend_submission = operation->submit_async([weak_runtime, weak_operation](
+                        std::exception_ptr error, std::optional<double> gpu_start, std::optional<double> gpu_end) noexcept {
                         try {
                             auto submitted = weak_operation.lock();
                             if (!submitted || submitted->completion_signaled.exchange(true)) return;
@@ -241,27 +270,36 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
                                 std::lock_guard lock(submitted->completion_mutex);
                                 submitted->completion_error = std::move(error);
                                 submitted->completion_received = true;
+                                if (auto runtime = weak_runtime.lock(); runtime && runtime->metrics_enabled) {
+                                    if (runtime->backend == Backend::Metal) {
+                                        submitted->metal_completion_observed_ns = steady_now_ns();
+                                        submitted->metal_gpu_start_seconds = gpu_start;
+                                        submitted->metal_gpu_end_seconds = gpu_end;
+                                    } else {
+                                        submitted->host_completion_ns = steady_now_ns();
+                                    }
+                                }
                                 notify = submitted->submission_returned;
-                                if (notify) submitted->completion_ready.store(true, std::memory_order_release);
                             }
                             if (notify) {
-                                if (auto runtime = weak_runtime.lock()) runtime->gpu_cv.notify_one();
+                                if (auto runtime = weak_runtime.lock()) runtime->publish_completion_ready(submitted);
                             }
                         } catch (...) {
                             // Completion forwarding is allocation-free and cannot fail due to operation limits.
                         }
                     });
+                    bool notify = false;
                     {
                         std::lock_guard lock(operation->completion_mutex);
                         operation->backend_submission = std::move(backend_submission);
+                        if (metrics_enabled && backend == Backend::Metal) operation->metal_commit_observed_ns = steady_now_ns();
                         operation->submission_returned = true;
-                        if (operation->completion_received) {
-                            operation->completion_ready.store(true, std::memory_order_release);
-                        }
+                        notify = operation->completion_received;
                     }
-                    if (operation->completion_ready.load(std::memory_order_acquire)) gpu_cv.notify_one();
+                    if (notify) publish_completion_ready(operation);
                 } catch (...) {
                     const auto error = std::current_exception();
+                    if (metrics_enabled && !operation->host_completion_ns) operation->host_completion_ns = steady_now_ns();
                     if (inserted) {
                         std::lock_guard lock(mutex);
                         auto it = std::find_if(in_flight.begin(), in_flight.end(), [&](const InFlightOperation& entry) {
@@ -280,11 +318,13 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
             }
 
             std::exception_ptr failure;
+            if (metrics_enabled) operation->execution_start_ns = steady_now_ns();
             try {
                 operation->execute();
             } catch (...) {
                 failure = std::current_exception();
             }
+            if (metrics_enabled) operation->host_completion_ns = steady_now_ns();
 
             {
                 std::lock_guard lock(mutex);
@@ -304,6 +344,7 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
             while (!stream->queue.empty()) {
                 auto skipped = std::move(stream->queue.front());
                 stream->queue.pop_front();
+                skipped->skipped = true;
                 retire_operation(*stream, skipped, stream->failure);
             }
         } else if (!stream->queue.empty()) {
@@ -316,11 +357,23 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
                 while (!stream->queue.empty()) {
                     auto skipped = std::move(stream->queue.front());
                     stream->queue.pop_front();
+                    skipped->skipped = true;
                     retire_operation(*stream, skipped, stream->failure);
                 }
             }
         }
         idle_cv.notify_all();
+    }
+
+    void publish_completion_ready(const std::shared_ptr<Operation>& operation) {
+        // Publish under the same mutex used by gpu_cv's predicate/wait transition.
+        // An atomic flag alone cannot prevent a notification between that check and sleep.
+        // The completion mutex must be released first: retirement takes these locks separately.
+        {
+            std::lock_guard lock(mutex);
+            operation->completion_ready.store(true, std::memory_order_release);
+        }
+        gpu_cv.notify_one();
     }
 
     void retirement_loop() noexcept {
@@ -376,6 +429,32 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
         operation->staging.reset();
         ++stream.retired;
         --outstanding;
+        if (metrics_enabled) {
+            OperationMetric metric;
+            metric.kind = operation->kind;
+            metric.backend = backend;
+            metric.status = operation->skipped ? OperationStatus::skipped
+                : error ? OperationStatus::failed : OperationStatus::succeeded;
+            metric.stream_id = stream.id;
+            metric.operation_id = operation->ordering_id;
+            metric.accepted_steady_ns = operation->accepted_ns;
+            metric.execution_start_steady_ns = operation->execution_start_ns;
+            metric.host_completion_steady_ns = operation->host_completion_ns;
+            metric.metal_commit_observed_steady_ns = operation->metal_commit_observed_ns;
+            metric.metal_completion_observed_steady_ns = operation->metal_completion_observed_ns;
+            metric.retirement_publication_steady_ns = steady_now_ns();
+            metric.metal_gpu_start_seconds = operation->metal_gpu_start_seconds;
+            metric.metal_gpu_end_seconds = operation->metal_gpu_end_seconds;
+            if (operation->metal_gpu_start_seconds && operation->metal_gpu_end_seconds &&
+                std::isfinite(*operation->metal_gpu_start_seconds) && std::isfinite(*operation->metal_gpu_end_seconds) &&
+                *operation->metal_gpu_end_seconds >= *operation->metal_gpu_start_seconds) {
+                metric.metal_gpu_command_buffer_execution_seconds =
+                    *operation->metal_gpu_end_seconds - *operation->metal_gpu_start_seconds;
+            }
+            std::lock_guard metrics_lock(metrics_mutex);
+            if (metrics_records.size() < metrics_capacity) metrics_records.push_back(std::move(metric));
+            else if (dropped_metric_records != std::numeric_limits<std::size_t>::max()) ++dropped_metric_records;
+        }
         if (operation->event) {
             {
                 std::lock_guard event_lock(operation->event->mutex);
@@ -470,6 +549,11 @@ struct RuntimeState : std::enable_shared_from_this<RuntimeState> {
     std::size_t operation_limit;
     std::size_t staging_limit;
     std::size_t allocation_limit;
+    bool metrics_enabled{false};
+    std::size_t metrics_capacity{0};
+    mutable std::mutex metrics_mutex;
+    std::vector<OperationMetric> metrics_records;
+    std::size_t dropped_metric_records{0};
     std::atomic<std::size_t> allocated_bytes{0};
     std::size_t outstanding{0};
     std::atomic<std::size_t> staging_bytes{0};
@@ -528,7 +612,8 @@ struct Runtime::Impl {
                 auto metal_device = detail::create_metal_device();
                 device = metal_device->name();
                 scheduler = std::make_shared<detail::RuntimeState>(options.backend, options.worker_count,
-                    options.max_outstanding_operations, options.max_staging_bytes, options.max_allocated_bytes);
+                    options.max_outstanding_operations, options.max_staging_bytes, options.max_allocated_bytes,
+                    options.enable_operation_metrics, options.operation_metrics_capacity);
                 scheduler->metal = std::shared_ptr<detail::MetalDevice>(std::move(metal_device));
             }
             return;
@@ -540,7 +625,8 @@ struct Runtime::Impl {
             throw std::invalid_argument("Unknown GridForge backend selection.");
         }
         scheduler = std::make_shared<detail::RuntimeState>(options.backend, options.worker_count,
-            options.max_outstanding_operations, options.max_staging_bytes, options.max_allocated_bytes);
+            options.max_outstanding_operations, options.max_staging_bytes, options.max_allocated_bytes,
+            options.enable_operation_metrics, options.operation_metrics_capacity);
     }
 
     RuntimeOptions options;
@@ -638,6 +724,7 @@ void accept_operation(const std::shared_ptr<detail::RuntimeState>& runtime,
         ++runtime->outstanding;
         stream->last_accepted = position;
         runtime->next_ordering_id = ordering_id == std::numeric_limits<std::uint64_t>::max() ? 0 : ordering_id + 1;
+        if (runtime->metrics_enabled) operation->accepted_ns = detail::steady_now_ns();
         if (was_empty) runtime->ready_cv.notify_one();
     } catch (...) {
         if (barrier_committed) stream->active_barriers.pop_back();
@@ -835,6 +922,7 @@ void Stream::upload_async(Buffer& destination, std::span<const std::byte> source
         throw;
     }
     auto operation = std::make_shared<detail::Operation>();
+    operation->kind = OperationKind::upload;
     operation->accesses.push_back({buffer, detail::AccessMode::write});
     operation->staging = std::move(lease);
     operation->execute = [buffer, owned, offset] {
@@ -874,6 +962,7 @@ void Stream::vector_add_async(const Buffer& a, const Buffer& b, Buffer& c, std::
     const auto bytes = element_count * sizeof(float);
     if (left->bytes != bytes || right->bytes != bytes || output->bytes != bytes) throw std::invalid_argument("Vector-add buffers must each be exactly element_count * sizeof(float) bytes.");
     auto operation = std::make_shared<detail::Operation>();
+    operation->kind = OperationKind::vector_add;
     operation->accesses = {{left, detail::AccessMode::read}, {right, detail::AccessMode::read}, {output, detail::AccessMode::write}};
     if (runtime->backend == Backend::CPU || element_count == 0) {
         operation->execute = [left, right, output, element_count] {
@@ -888,7 +977,7 @@ void Stream::vector_add_async(const Buffer& a, const Buffer& b, Buffer& c, std::
 #if defined(GRIDFORGE_HAS_METAL)
     else {
         operation->submit_async = [left, right, output, element_count](
-            std::function<void(std::exception_ptr)> completion) {
+            detail::CompletionCallback completion) {
             return left->metal_device->submit_vector_add(*left->metal_storage, *right->metal_storage,
                                                          *output->metal_storage, element_count,
                                                          std::move(completion));
@@ -921,6 +1010,7 @@ DownloadResult Stream::download_async(const Buffer& source, std::size_t offset, 
         throw;
     }
     auto operation = std::make_shared<detail::Operation>();
+    operation->kind = OperationKind::download;
     operation->download = result;
     operation->accesses.push_back({buffer, detail::AccessMode::read});
     operation->execute = [buffer, result, offset, byte_count] {
@@ -950,6 +1040,7 @@ Event Stream::wait_event(const Event& dependency) {
     auto runtime = get_runtime(stream);
     auto event = std::make_shared<detail::EventState>();
     auto operation = std::make_shared<detail::Operation>();
+    operation->kind = OperationKind::event_barrier;
     operation->event = event;
     operation->dependency = dependency.state_;
     operation->execute = [] {};
@@ -986,6 +1077,7 @@ Event Stream::record_event() {
     }
     auto event = std::make_shared<detail::EventState>();
     auto operation = std::make_shared<detail::Operation>();
+    operation->kind = OperationKind::event_record;
     operation->event = event;
     operation->execute = [] {};
     try {
@@ -1034,6 +1126,19 @@ const char* Runtime::device_name() const {
 std::size_t Runtime::worker_count() const {
     if (!impl_) throw std::logic_error("Operation on a moved-from GridForge runtime.");
     return impl_->options.worker_count;
+}
+
+OperationMetricsSnapshot Runtime::drain_operation_metrics() {
+    if (!impl_) throw std::logic_error("Operation on a moved-from GridForge runtime.");
+    auto scheduler = impl_->scheduler;
+    OperationMetricsSnapshot snapshot;
+    snapshot.enabled = scheduler->metrics_enabled;
+    if (!snapshot.enabled) return snapshot;
+    std::lock_guard lock(scheduler->metrics_mutex);
+    snapshot.records = scheduler->metrics_records;
+    snapshot.dropped_records = scheduler->dropped_metric_records;
+    scheduler->metrics_records.clear();
+    return snapshot;
 }
 
 Buffer Runtime::create_buffer(std::size_t size_bytes) {
@@ -1151,6 +1256,7 @@ Event TestAccess::enqueue_test_task(Stream& stream, std::function<void()> task) 
     auto state = stream.impl_->state;
     auto runtime = get_runtime(state);
     auto operation = std::make_shared<Operation>();
+    operation->kind = OperationKind::test_task;
     operation->execute = std::move(task);
     operation->event = std::make_shared<EventState>();
     accept_operation(runtime, state, operation);
@@ -1163,7 +1269,12 @@ Event TestAccess::enqueue_deferred_task(
     auto state = stream.impl_->state;
     auto runtime = get_runtime(state);
     auto operation = std::make_shared<Operation>();
-    operation->submit_async = std::move(submit);
+    operation->kind = OperationKind::test_task;
+    operation->submit_async = [submit = std::move(submit)](CompletionCallback completion) mutable {
+        return submit([completion = std::move(completion)](std::exception_ptr error) mutable {
+            completion(std::move(error), std::nullopt, std::nullopt);
+        });
+    };
     operation->event = std::make_shared<EventState>();
     accept_operation(runtime, state, operation);
     return Event(operation->event);

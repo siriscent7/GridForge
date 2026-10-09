@@ -62,6 +62,38 @@ add_executable(gridforge_dependency_demo src/dependency_main.cpp)
 target_link_libraries(gridforge_dependency_demo PRIVATE GridForge::gridforge)
 target_compile_features(gridforge_dependency_demo PRIVATE cxx_std_20)
 
+add_executable(gridforge_bench src/bench_main.cpp)
+target_link_libraries(gridforge_bench PRIVATE GridForge::gridforge)
+target_compile_features(gridforge_bench PRIVATE cxx_std_20)
+
+set(GRIDFORGE_GIT_REVISION "unavailable")
+set(GRIDFORGE_GIT_DIRTY "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=12 HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE GRIDFORGE_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE GRIDFORGE_GIT_REVISION_RESULT)
+    if(NOT GRIDFORGE_GIT_REVISION_RESULT EQUAL 0)
+        set(GRIDFORGE_GIT_REVISION "unavailable")
+    endif()
+    execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE GRIDFORGE_GIT_STATUS OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE GRIDFORGE_GIT_STATUS_RESULT)
+    if(GRIDFORGE_GIT_STATUS_RESULT EQUAL 0)
+        if(GRIDFORGE_GIT_STATUS STREQUAL "")
+            set(GRIDFORGE_GIT_DIRTY "false")
+        else()
+            set(GRIDFORGE_GIT_DIRTY "true")
+        endif()
+    endif()
+endif()
+target_compile_definitions(gridforge_bench PRIVATE
+    GRIDFORGE_GIT_REVISION="${GRIDFORGE_GIT_REVISION}"
+    GRIDFORGE_GIT_DIRTY="${GRIDFORGE_GIT_DIRTY}"
+    GRIDFORGE_BUILD_CONFIG="$<CONFIG>")
+
 if(GRIDFORGE_BUILD_TESTS)
     include(CTest)
     add_executable(gridforge_tests tests/test_runtime.cpp)
@@ -88,14 +120,21 @@ if(GRIDFORGE_BUILD_TESTS)
     target_link_libraries(gridforge_dependency_metal_tests PRIVATE GridForge::gridforge)
     target_compile_features(gridforge_dependency_metal_tests PRIVATE cxx_std_20)
 
+    add_executable(gridforge_bench_tests tests/test_bench.cpp)
+    target_link_libraries(gridforge_bench_tests PRIVATE GridForge::gridforge)
+    target_compile_features(gridforge_bench_tests PRIVATE cxx_std_20)
+    target_include_directories(gridforge_bench_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
     add_test(NAME gridforge_cpu COMMAND gridforge_tests --backend cpu)
     add_test(NAME gridforge_metal COMMAND gridforge_tests --backend metal)
     add_test(NAME gridforge_async_cpu COMMAND gridforge_async_tests)
     add_test(NAME gridforge_async_metal COMMAND gridforge_async_metal_tests)
     add_test(NAME gridforge_dependencies_cpu COMMAND gridforge_dependency_tests)
     add_test(NAME gridforge_dependencies_metal COMMAND gridforge_dependency_metal_tests)
+    add_dependencies(gridforge_bench_tests gridforge_bench)
+    add_test(NAME gridforge_bench_tests COMMAND gridforge_bench_tests "$<TARGET_FILE:gridforge_bench>")
     set_tests_properties(gridforge_metal PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(gridforge_async_metal PROPERTIES SKIP_RETURN_CODE 77)
     set_tests_properties(gridforge_dependencies_metal PROPERTIES SKIP_RETURN_CODE 77)
-    set_tests_properties(gridforge_cpu gridforge_metal gridforge_async_cpu gridforge_async_metal gridforge_dependencies_cpu gridforge_dependencies_metal PROPERTIES TIMEOUT 90)
+    set_tests_properties(gridforge_cpu gridforge_metal gridforge_async_cpu gridforge_async_metal gridforge_dependencies_cpu gridforge_dependencies_metal gridforge_bench_tests PROPERTIES TIMEOUT 90)
 endif()

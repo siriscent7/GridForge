@@ -4,6 +4,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -26,7 +27,7 @@ public:
     [[nodiscard]] virtual std::shared_ptr<void> submit_vector_add(
         const MetalBuffer& a, const MetalBuffer& b, MetalBuffer& c,
         std::size_t element_count,
-        std::function<void(std::exception_ptr)> completion) = 0;
+        std::function<void(std::exception_ptr, std::optional<double>, std::optional<double>)> completion) = 0;
     virtual void synchronize() = 0;
 };
 

@@ -1,0 +1,62 @@
+{
+  "schema": "gridforge.benchmark.v1",
+  "generated_utc": "2026-10-09T03:07:01Z",
+  "backend": "cpu",
+  "workload": "single",
+  "worker_count": 4,
+  "warmup_count": 1,
+  "measured_iterations": 1,
+  "seed": 1196575044,
+  "sizes": [256, 18446744073709551615],
+  "stream_counts": [1, 2, 4],
+  "records": [
+    {
+      "backend": "cpu",
+      "workload": "single",
+      "execution_mode": "sync",
+      "element_count": 256,
+      "stream_count": 1,
+      "verified": true,
+      "end_to_end_ms": 0.005833,
+      "submission_ms": 0.005833,
+      "resident_compute_ms": 0.005833,
+      "throughput_elements_per_second": 43888222.1841248
+    },
+    {
+      "backend": "cpu",
+      "workload": "single",
+      "execution_mode": "async",
+      "element_count": 256,
+      "stream_count": 1,
+      "verified": true,
+      "end_to_end_ms": 0.02025,
+      "submission_ms": 0.02025,
+      "resident_compute_ms": 0.02025,
+      "throughput_elements_per_second": 12641975.308642
+    },
+    {
+      "backend": "cpu",
+      "workload": "single",
+      "execution_mode": "sync",
+      "element_count": 18446744073709551615,
+      "stream_count": 1,
+      "verified": false,
+      "end_to_end_ms": 0,
+      "submission_ms": 0,
+      "resident_compute_ms": 0,
+      "throughput_elements_per_second": 0
+    },
+    {
+      "backend": "cpu",
+      "workload": "single",
+      "execution_mode": "async",
+      "element_count": 18446744073709551615,
+      "stream_count": 1,
+      "verified": false,
+      "end_to_end_ms": 0,
+      "submission_ms": 0,
+      "resident_compute_ms": 0,
+      "throughput_elements_per_second": 0
+    }
+  ]
+}

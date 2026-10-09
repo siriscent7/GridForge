@@ -1,0 +1,9 @@
+case_id,iteration_id,measurement_order,backend,workload,mode,element_count,requested_stream_count,actual_stream_count,launch_count,element_additions,worker_count,seed,verified,end_to_end_ms,submission_ms,resident_compute_ms
+case-0001,1,1,cpu,single,sync,16,1,0,1,16,4,1196575044,true,0.001708,,
+case-0001,2,7,cpu,single,sync,16,1,0,1,16,4,1196575044,true,0.001208,,
+case-0002,1,4,cpu,single,async,16,1,1,1,16,4,1196575044,true,0.042959,0.004,
+case-0002,2,6,cpu,single,async,16,1,1,1,16,4,1196575044,true,0.01625,0.002417,
+case-0003,1,2,metal,single,sync,16,1,0,1,16,4,1196575044,true,0.637625,,
+case-0003,2,8,metal,single,sync,16,1,0,1,16,4,1196575044,true,0.501291,,
+case-0004,1,3,metal,single,async,16,1,1,1,16,4,1196575044,true,0.186666,0.007917,
+case-0004,2,5,metal,single,async,16,1,1,1,16,4,1196575044,true,0.518292,0.003792,

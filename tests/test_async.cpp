@@ -554,6 +554,95 @@ void test_deferred_failure_and_shutdown_completion() {
     event.wait();
 }
 
+void test_operation_metrics_disabled_bounded_drain_and_status() {
+    {
+        gridforge::Runtime runtime;
+        auto stream = runtime.create_stream();
+        auto event = gridforge::detail::TestAccess::enqueue_test_task(stream, [] {});
+        event.wait();
+        const auto metrics = runtime.drain_operation_metrics();
+        require(!metrics.enabled && metrics.records.empty() && metrics.dropped_records == 0,
+                "operation metrics must be disabled by default");
+    }
+
+    {
+        gridforge::RuntimeOptions options;
+        options.backend = gridforge::Backend::CPU;
+        options.enable_operation_metrics = true;
+        options.operation_metrics_capacity = 2;
+        gridforge::Runtime runtime(options);
+        auto stream = runtime.create_stream();
+        auto first = gridforge::detail::TestAccess::enqueue_test_task(stream, [] {});
+        auto second = gridforge::detail::TestAccess::enqueue_test_task(stream, [] {});
+        auto third = gridforge::detail::TestAccess::enqueue_test_task(stream, [] {});
+        first.wait();
+        second.wait();
+        third.wait();
+        auto drained = runtime.drain_operation_metrics();
+        require(drained.enabled && drained.records.size() == 2 && drained.dropped_records == 1,
+                "bounded metrics must drop excess records and report the count");
+        require(drained.records[0].accepted_steady_ns && drained.records[0].execution_start_steady_ns &&
+                drained.records[0].host_completion_steady_ns && drained.records[0].retirement_publication_steady_ns,
+                "CPU lifecycle timestamps were not captured");
+        const auto empty = runtime.drain_operation_metrics();
+        require(empty.records.empty() && empty.dropped_records == 1,
+                "draining metrics must clear records and retain cumulative drop accounting");
+    }
+
+    {
+        gridforge::RuntimeOptions options;
+        options.backend = gridforge::Backend::CPU;
+        options.enable_operation_metrics = true;
+        options.operation_metrics_capacity = 8;
+        gridforge::Runtime runtime(options);
+        auto stream = runtime.create_stream();
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::function<void(std::exception_ptr)> complete;
+        bool registered = false;
+        auto failed = gridforge::detail::TestAccess::enqueue_deferred_task(stream, [&](auto callback) {
+            {
+                std::lock_guard lock(mutex);
+                complete = std::move(callback);
+                registered = true;
+            }
+            cv.notify_all();
+            return std::shared_ptr<void>{};
+        });
+        auto skipped = gridforge::detail::TestAccess::enqueue_test_task(stream, [] {});
+        {
+            std::unique_lock lock(mutex);
+            cv.wait(lock, [&] { return registered; });
+        }
+        complete(std::make_exception_ptr(std::runtime_error("metrics injected failure")));
+        require_throws<std::runtime_error>([&] { failed.wait(); }, "instrumented failure was not propagated");
+        require_throws<std::runtime_error>([&] { skipped.wait(); }, "instrumented skipped operation did not inherit failure");
+        const auto metrics = runtime.drain_operation_metrics();
+        require(metrics.records.size() == 2 && metrics.records[0].status == gridforge::OperationStatus::failed &&
+                metrics.records[1].status == gridforge::OperationStatus::skipped,
+                "failed and skipped operation metrics statuses are inaccurate");
+        require(metrics.records[0].operation_id != 0 && metrics.records[0].stream_id != 0,
+                "operation metrics omitted accepted operation/stream IDs");
+    }
+}
+
+void test_completion_callback_before_submit_return_handshake() {
+    gridforge::Runtime runtime({gridforge::Backend::CPU, gridforge::default_max_allocated_bytes, 1});
+    auto stream = runtime.create_stream();
+    std::latch callback_forwarded(1);
+    std::latch allow_submission_return(1);
+    auto event = gridforge::detail::TestAccess::enqueue_deferred_task(stream, [&](auto callback) {
+        callback({});
+        callback_forwarded.count_down();
+        allow_submission_return.wait();
+        return std::shared_ptr<void>{};
+    });
+    callback_forwarded.wait();
+    require(!event.is_complete(), "early completion callback must not retire before submission returns");
+    allow_submission_return.count_down();
+    event.wait();
+}
+
 void run_all_tests() {
     test_ordering_known_and_randomized();
     test_event_position_and_empty_stream();
@@ -569,6 +658,8 @@ void run_all_tests() {
     test_deferred_operation_counts_until_retirement();
     test_stream_synchronization_uses_acceptance_snapshot();
     test_deferred_failure_and_shutdown_completion();
+    test_operation_metrics_disabled_bounded_drain_and_status();
+    test_completion_callback_before_submit_return_handshake();
 }
 
 } // namespace
